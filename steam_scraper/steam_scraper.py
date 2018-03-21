@@ -10,7 +10,7 @@ class SteamData:
     US_URL = "http://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/?appid=%d&key=%s&steamid=%s"
     UO_URL = " http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=%s&steamid=%s&format=json"
     UB_URL = "http://api.steampowered.com/ISteamUser/GetPlayerBans/v1/?key=%s&steamids=%s"
-    APIKEY = "0aa"
+    APIKEY= "yourAppkey"
     authors = set()
     authorsList = []
     currentAppId = -1
@@ -146,85 +146,97 @@ class SteamData:
         return
     
     
-    def getUserSummary(self):
-        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10) for steamid in self.authorsList)
+    def getUserSummary(self,userlist):
+        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
         docs = []
-        for i,steamid_i in zip(res_,self.authorsList):
+        for i,steamid_i in zip(res_,userlist):
             try:
                 doc = i.json()["response"]['players'][0]
             except:
                 continue
-            doc.update({"checkDate":self.checkTime})
             docs.append(doc)
         return docs
         
     
-    def getUserOwns(self):
-        rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid),timeout=10) for steamid in self.authorsList)
+    def getUserOwns(self,userlist):
+        rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
         docs = []
-        for i,steamid_i in zip(res_,self.authorsList):
+        for i,steamid_i in zip(res_,userlist):
             try:
                 doc = i.json()["response"]
             except:
                 continue
-            doc.update({"steamid":steamid_i,"checkDate":self.checkTime})
+            doc.update({"steamid":steamid_i})
             docs.append(doc)
         return docs
 
     
-    def getUserAchieve(self):
-        rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10) for steamid in self.authorsList)
+    def getUserAchieve(self,userlist):
+        rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
         docs = []
-        for i,steamid_i in zip(res_,self.authorsList):
+        for i,steamid_i in zip(res_,userlist):
             try:
                 doc = i.json()["playerstats"]
             except:
                 continue
-            doc.update({"appid":self.currentAppId,"checkDate":self.checkTime})
+            doc.update({"appid":self.currentAppId})
             docs.append(doc)
         return docs     
 
     
-    def getUserBan(self):
-        rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10) for steamid in self.authorsList)
+    def getUserBan(self,userlist):
+        rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
         docs = []
-        for i,steamid_i in zip(res_,self.authorsList):
+        for i,steamid_i in zip(res_,userlist):
             try:
                 doc = i.json()["players"][0]
             except:
                 continue
-            doc.update({"appid":self.currentAppId,"checkDate":self.checkTime})
+            doc.update({"appid":self.currentAppId})
             docs.append(doc)
         return docs     
     
     def chunks(self,l, n):
         for i in range(0, len(l), n):
             yield l[i:i + n]
-            
+    
+    def replaceUserCollection(self,dataArr,func,updateKeys):
+        keysList = list(updateKeys.keys())
+        for data in dataArr:
+            func({myKey:data[myKey] for myKey in keysList},data)
+    
     def updateUserInfos(self):
-        dt = datetime.datetime.now()
-        self.checkTime = int(time.mktime(dt.timetuple()))
-        authors = list(self.authors)
-        authorsC = list(self.chunks(authors, 100))
-        for auList in authorsC:
-            self.authorsList= auList
-            us = self.getUserSummary()
-            uo = self.getUserOwns()
-            ua = self.getUserAchieve()
-            ub = self.getUserBan()
-            if len(us) != 0:
-                self.db.userSummary.insert_many(us)
-            if len(uo) != 0:
-                self.db.userOwns.insert_many(uo)
-            if len(ua) != 0:
-                self.db.userAchieve.insert_many(ua)
-            if len(ub) != 0:
-                self.db.userBan.insert_many(ub)
-        print("user Info Successfully updated")
+        insertFuncArr = [self.db.userSummary.insert_many,self.db.userOwns.insert_many,self.db.userAchieve.insert_many,self.db.userBan.insert_many]
+        replaceFuncArr = [self.db.userSummary.replace_one,self.db.userOwns.replace_one,self.db.userAchieve.replace_one,self.db.userBan.replace_one]
+        updateKeys = [{"steamid":-1},{"steamid":-1},{"steamid":-1,"appid":self.currentAppId},{"steamid":-1,"appid":self.currentAppId}]
+        users_inDB = set(self.db.userSummary.distinct("steamid"))
+        newUsers = self.authors - users_inDB
+        replaceUser = users_inDB & self.authors
+        
+        newUsersC = list(self.chunks(list(newUsers), 100))
+        replaceUserC = list(self.chunks(list(replaceUser), 100))
+        
+        for taskflag,userChunks,funcArr in [("insert",newUsersC,insertFuncArr),("replace",replaceUserC,replaceFuncArr)] :
+            for userlist in userChunks:
+                us = self.getUserSummary(userlist) # pk : steamid
+                uo = self.getUserOwns(userlist)    # pk : steamid
+                ua = self.getUserAchieve(userlist) # pk : steamid + appid
+                ub = self.getUserBan(userlist)     # pk : steamid + appid
+                for dataArr,func,updateKey in zip([us,uo,ua,ub],funcArr,updateKeys):
+                    if len(dataArr) == 0:
+                        continue
+                    if taskflag == "insert":
+                        func(dataArr)
+                    else:
+                        self.replaceUserCollection(arr,func,updateKey)
+                    
         return ;
+
+
+
 
 
