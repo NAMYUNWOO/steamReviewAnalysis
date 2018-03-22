@@ -1,5 +1,9 @@
 import requests, grequests,re,sqlite3,datetime,sys,getopt,pymongo,time
 from collections import deque
+from bs4 import BeautifulSoup as bs
+from copy import copy
+http_proxy  = "http://139.59.224.50:8080"
+
 
 class SteamData:
     R_URL = "http://store.steampowered.com/appreviews/%d?json=1&filter=recent&start_offset=%d"
@@ -10,16 +14,32 @@ class SteamData:
     US_URL = "http://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/?appid=%d&key=%s&steamid=%s"
     UO_URL = " http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=%s&steamid=%s&format=json"
     UB_URL = "http://api.steampowered.com/ISteamUser/GetPlayerBans/v1/?key=%s&steamids=%s"
-    APIKEY= "yourAppkey"
+    APIKEY= "9F041FB9B406DCC0FD036440C6BC459C"
     authors = set()
+    usedProxy = set()
     authorsList = []
     currentAppId = -1
-    
+    usedUp = 0
     
     def __init__(self):
         self.client = pymongo.MongoClient()
         self.db = self.client.steam
+        
     
+    def renewProxy(self):
+        proxyList = list(self.getProxyList(self.usedProxy))
+        if len(proxyList) == 0:
+            proxyList = list(self.getProxyList(set([""])))
+        http_proxy = proxyList[0]
+        self.proxy = {"http":http_proxy,"https":http_proxy}
+        prox = copy(http_proxy)
+        self.usedProxy.add(prox)
+        
+    def getProxyList(self,usedProxy):
+        res = requests.get("https://www.us-proxy.org/")
+        bssoup = bs(res.text,"html.parser")
+        restProxy = set(map(lambda x:"http://"+":".join(map(lambda j:j.text,x.find_all("td")[:2])),bssoup.find_all("tr")[1:-1])) - usedProxy
+        return restProxy
     def newAppList(self):
         appList = requests.get(self.GL_URL).json()["applist"]["apps"]
         return appList
@@ -147,8 +167,18 @@ class SteamData:
     
     
     def getUserSummary(self,userlist):
-        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
+        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
         res_ = grequests.map(rs)
+        status =  [i.status_code for i in res_ if i != None]
+        while 200*len(status) != sum(status) or len(status) == 0:
+            self.usedUp += 1
+            print("used up proxy %d"%(self.usedUp))
+            self.renewProxy()
+            rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            res_ = grequests.map(rs)
+            status = [i.status_code for i in res_ if i != None]
+        
+        
         docs = []
         for i,steamid_i in zip(res_,userlist):
             try:
@@ -162,6 +192,14 @@ class SteamData:
     def getUserOwns(self,userlist):
         rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
+        status =  [i.status_code for i in res_ if i != None]
+        while 200*len(status) != sum(status) or len(status) == 0:
+            self.usedUp += 1
+            print("used up proxy %d"%(self.usedUp))
+            self.renewProxy()
+            rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
+            res_ = grequests.map(rs)
+            status = [i.status_code for i in res_ if i != None]
         docs = []
         for i,steamid_i in zip(res_,userlist):
             try:
@@ -176,6 +214,14 @@ class SteamData:
     def getUserAchieve(self,userlist):
         rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
+        status =  [i.status_code for i in res_ if i != None]
+        while 200*len(status) != sum(status) or len(status) == 0:
+            self.usedUp += 1
+            print("used up proxy %d"%(self.usedUp))
+            self.renewProxy()
+            rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            res_ = grequests.map(rs)
+            status = [i.status_code for i in res_ if i != None]
         docs = []
         for i,steamid_i in zip(res_,userlist):
             try:
@@ -190,6 +236,14 @@ class SteamData:
     def getUserBan(self,userlist):
         rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
+        status =  [i.status_code for i in res_ if i != None]
+        while 200*len(status) != sum(status) or len(status) == 0:
+            self.usedUp += 1
+            print("used up proxy %d"%(self.usedUp))
+            self.renewProxy()
+            rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            res_ = grequests.map(rs)
+            status = [i.status_code for i in res_ if i != None]
         docs = []
         for i,steamid_i in zip(res_,userlist):
             try:
@@ -219,7 +273,7 @@ class SteamData:
         
         newUsersC = list(self.chunks(list(newUsers), 100))
         replaceUserC = list(self.chunks(list(replaceUser), 100))
-        
+        self.renewProxy()
         for taskflag,userChunks,funcArr in [("insert",newUsersC,insertFuncArr),("replace",replaceUserC,replaceFuncArr)] :
             for userlist in userChunks:
                 us = self.getUserSummary(userlist) # pk : steamid
@@ -235,8 +289,3 @@ class SteamData:
                         self.replaceUserCollection(arr,func,updateKey)
                     
         return ;
-
-
-
-
-
