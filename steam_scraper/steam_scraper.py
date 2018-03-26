@@ -1,8 +1,13 @@
-import requests, grequests,re,sqlite3,datetime,sys,getopt,pymongo,time
+import socket 
+import socks 
+from urllib.request import urlopen 
 from collections import deque
-from bs4 import BeautifulSoup as bs
 from copy import copy
-http_proxy  = "http://139.59.224.50:8080"
+import requests, grequests,re,datetime,sys,getopt,pymongo,time
+socks.set_default_proxy(socks.SOCKS5,"localhost",9150)
+socket.socket = socks.socksocket
+ipch = 'http://icanhazip.com'
+print(urlopen(ipch).read())
 
 
 class SteamData:
@@ -16,30 +21,22 @@ class SteamData:
     UB_URL = "http://api.steampowered.com/ISteamUser/GetPlayerBans/v1/?key=%s&steamids=%s"
     APIKEY= "9F041FB9B406DCC0FD036440C6BC459C"
     authors = set()
-    usedProxy = set()
     authorsList = []
     currentAppId = -1
-    usedUp = 0
-    
+
+
+    def pysocksSetting(self):
+        socks.set_default_proxy(socks.SOCKS5,"localhost",9150) 
+        socket.socket = socks.socksocket 
+        ipch = 'http://icanhazip.com' 
+        print(urlopen(ipch).read()) 
+
+
     def __init__(self):
         self.client = pymongo.MongoClient()
         self.db = self.client.steam
         
     
-    def renewProxy(self):
-        proxyList = list(self.getProxyList(self.usedProxy))
-        if len(proxyList) == 0:
-            proxyList = list(self.getProxyList(set([""])))
-        http_proxy = proxyList[0]
-        self.proxy = {"http":http_proxy,"https":http_proxy}
-        prox = copy(http_proxy)
-        self.usedProxy.add(prox)
-        
-    def getProxyList(self,usedProxy):
-        res = requests.get("https://www.us-proxy.org/")
-        bssoup = bs(res.text,"html.parser")
-        restProxy = set(map(lambda x:"http://"+":".join(map(lambda j:j.text,x.find_all("td")[:2])),bssoup.find_all("tr")[1:-1])) - usedProxy
-        return restProxy
     def newAppList(self):
         appList = requests.get(self.GL_URL).json()["applist"]["apps"]
         return appList
@@ -70,16 +67,18 @@ class SteamData:
         curAppidsSet = set(self.getAppids())
         updatedDetailsSet = set(self.db.appDetail.distinct('steam_appid'))
         ids2Add = curAppidsSet - updatedDetailsSet
-        rs = (grequests.get(self.G_URL%(i),timeout=2) for i in list(ids2Add))
-        myresponse = grequests.map(rs)
-        appDetails_ = list(map(lambda x: self.__getGameDetailMapper(x),myresponse))
-        appDetails = [i for i in appDetails_ if i != None]
-        return appDetails
+        for idsChunk in list(self.chunks(list(ids2Add), 100)):
+            rs = (grequests.get(self.G_URL%(i),timeout=10) for i in idsChunk)                
+            myresponse = grequests.map(rs)
+            appDetails_ = list(map(lambda x: self.__getGameDetailMapper(x),myresponse))
+            appDetails = [i for i in appDetails_ if i != None]
+            yield appDetails
      
     
     def updateAppDetail(self):
-        appDetails = self.getAppDetails()
-        self.db.appDetail.insert_many(appDetails)
+        for appDetails in self.getAppDetails():
+            self.db.appDetail.insert_many(appDetails)
+            print("insert %d app details"%len(appDetails))
     
     def updateAllAppReviews(self):
         appids = self.getAppids()
@@ -124,6 +123,7 @@ class SteamData:
                 failCnt = 0
                 insufficientCnt = 0
                 self.db.appReview.insert_many(res)
+                print("review size %d"%(self.db.appReview.count()),end="\r")
                 
         else:
             print("insert additional reviews")
@@ -142,10 +142,13 @@ class SteamData:
                     insufficientCnt += 1
                     if insufficientCnt < 10:
                         continue
-                insufficientCnt = 0
-                failCnt = 0
+
                 n = rng[-1]
+                failCnt = 0
+                insufficientCnt = 0
+                
                 m = len(res) -1
+
                 while True:
                     if m < 0 :
                         isEnd = True
@@ -162,19 +165,21 @@ class SteamData:
                 
         print("insert complete total review of AppID: %d is %d"%(appid,self.db.appReview.count({"appid":appid})))
         self.updateUserInfos()
+        f = open("reviewUsers.txt","w")
+        for i in list(self.authors):
+            f.write(str(i)+"\n")
+        f.close()
         self.authors.clear()
         return
     
     
     def getUserSummary(self,userlist):
-        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
         res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         while 200*len(status) != sum(status) or len(status) == 0:
-            self.usedUp += 1
-            print("used up proxy %d"%(self.usedUp))
-            self.renewProxy()
-            rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            self.pysocksSetting()
+            rs = (grequests.get(self.U_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
             res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
         
@@ -194,12 +199,11 @@ class SteamData:
         res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         while 200*len(status) != sum(status) or len(status) == 0:
-            self.usedUp += 1
-            print("used up proxy %d"%(self.usedUp))
-            self.renewProxy()
+            self.pysocksSetting()
             rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
             res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
+            
         docs = []
         for i,steamid_i in zip(res_,userlist):
             try:
@@ -216,10 +220,8 @@ class SteamData:
         res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         while 200*len(status) != sum(status) or len(status) == 0:
-            self.usedUp += 1
-            print("used up proxy %d"%(self.usedUp))
-            self.renewProxy()
-            rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            self.pysocksSetting()
+            rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid),timeout=10) for steamid in userlist)
             res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
         docs = []
@@ -238,13 +240,12 @@ class SteamData:
         res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         while 200*len(status) != sum(status) or len(status) == 0:
-            self.usedUp += 1
-            print("used up proxy %d"%(self.usedUp))
-            self.renewProxy()
-            rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10,proxies = self.proxy) for steamid in userlist)
+            self.pysocksSetting()
+            rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid),timeout=10) for steamid in userlist)
             res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
         docs = []
+
         for i,steamid_i in zip(res_,userlist):
             try:
                 doc = i.json()["players"][0]
@@ -273,7 +274,7 @@ class SteamData:
         
         newUsersC = list(self.chunks(list(newUsers), 100))
         replaceUserC = list(self.chunks(list(replaceUser), 100))
-        self.renewProxy()
+        self.pysocksSetting()
         for taskflag,userChunks,funcArr in [("insert",newUsersC,insertFuncArr),("replace",replaceUserC,replaceFuncArr)] :
             for userlist in userChunks:
                 us = self.getUserSummary(userlist) # pk : steamid
@@ -286,6 +287,13 @@ class SteamData:
                     if taskflag == "insert":
                         func(dataArr)
                     else:
-                        self.replaceUserCollection(arr,func,updateKey)
+                        self.replaceUserCollection(dataArr,func,updateKey)
                     
         return ;
+
+def main():
+    steamdata = SteamData()
+    steamdata.updateAppReviews(578080)
+
+if __name__ == "__main__":
+    main()
