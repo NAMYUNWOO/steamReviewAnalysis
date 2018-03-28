@@ -4,7 +4,7 @@ from urllib.request import urlopen
 from collections import deque
 from copy import copy
 import requests,re,datetime,sys,getopt,pymongo,time
-from requests_futures.sessions import FuturesSession
+import grequests
 
 
 class SteamData:
@@ -27,7 +27,6 @@ class SteamData:
     def __init__(self):
         self.client = pymongo.MongoClient()
         self.db = self.client.steam
-        self.session = FuturesSession(max_workers=100)
         self.torOff = False
 
     def offTorBrowser(self):
@@ -71,8 +70,8 @@ class SteamData:
         updatedDetailsSet = set(self.db.appDetail.distinct('steam_appid'))
         ids2Add = curAppidsSet - updatedDetailsSet
         for idsChunk in list(self.chunks(list(ids2Add), 100)):
-            rs = (self.session.get(self.G_URL%(i)) for i in idsChunk)
-            myresponse = map(lambda x:x.result(),rs)
+            rs = (grequests.get(self.G_URL%(i)) for i in idsChunk)
+            myresponse = grequests.map(rs)
             appDetails_ = map(lambda x: self.__getGameDetailMapper(x),myresponse)
             appDetails = [i for i in appDetails_ if i != None]
             yield appDetails
@@ -92,8 +91,8 @@ class SteamData:
 
 
     def reqReviewList(self,appid,rng):
-        rs = (self.session.get(self.R_URL%(appid,i)) for i in rng)
-        rs_a= list(map(lambda x:x.result(),rs))
+        rs = (grequests.get(self.R_URL%(appid,i)) for i in rng)
+        rs_a= grequests.map(rs)
         res = [j for i in rs_a if i != None for j in i.json()['reviews']]
         for res_i in res:
             try:
@@ -181,16 +180,16 @@ class SteamData:
 
 
     def getUserSummary(self,userlist):
-        rs = (self.session.get(self.U_URL%(self.APIKEY,steamid)) for steamid in userlist)
+        rs = (grequests.get(self.U_URL%(self.APIKEY,steamid)) for steamid in userlist)
         t0 = time.time()
-        res_ = list(map(lambda x:x.result(),rs))
+        res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         print("summary status",status[:5])
         print("summary req time %d"%(time.time() - t0))
         while len(status) == 0:
             self.pysocksSetting()
-            rs = (self.session.get(self.U_URL%(self.APIKEY,steamid)) for steamid in userlist)
-            res_ = list(map(lambda x:x.result(),rs))
+            rs = (grequests.get(self.U_URL%(self.APIKEY,steamid)) for steamid in userlist)
+            res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
 
 
@@ -205,16 +204,16 @@ class SteamData:
 
 
     def getUserOwns(self,userlist):
-        rs = (self.session.get(self.UO_URL%(self.APIKEY,steamid)) for steamid in userlist)
+        rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid)) for steamid in userlist)
         t0 = time.time()
-        res_ = list(map(lambda x:x.result(),rs))
+        res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         print("owns status",status[:5])
         print("owns req time %d"%(time.time() - t0))
         while len(status) == 0:
             self.pysocksSetting()
-            rs = (self.session.get(self.UO_URL%(self.APIKEY,steamid)) for steamid in userlist)
-            res_ = list(map(lambda x:x.result(),rs))
+            rs = (grequests.get(self.UO_URL%(self.APIKEY,steamid)) for steamid in userlist)
+            res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
 
         docs = []
@@ -229,16 +228,17 @@ class SteamData:
 
 
     def getUserAchieve(self,userlist):
-        rs = (self.session.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid)) for steamid in userlist)
+        rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid)) for steamid in userlist)
         t0 = time.time()
-        res_ = list(map(lambda x:x.result(),rs))
+        res_ = grequests.map(rs)
+        
         status =  [i.status_code for i in res_ if i != None]
         print("achieve status",status[:5])
         print("achieve req time %d"%(time.time() - t0))
         while len(status) == 0:
             self.pysocksSetting()
-            rs = (self.session.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid)) for steamid in userlist)
-            res_ = list(map(lambda x:x.result(),rs))
+            rs = (grequests.get(self.UA_URL%(self.currentAppId,self.APIKEY,steamid)) for steamid in userlist)
+            res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
         docs = []
         for i,steamid_i in zip(res_,userlist):
@@ -252,16 +252,16 @@ class SteamData:
 
 
     def getUserBan(self,userlist):
-        rs = (self.session.get(self.UB_URL%(self.APIKEY,steamid)) for steamid in userlist)
+        rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid)) for steamid in userlist)
         t0 = time.time()
-        res_ = list(map(lambda x:x.result(),rs))
+        res_ = grequests.map(rs)
         status =  [i.status_code for i in res_ if i != None]
         print("ban status",status[:5])
         print("ban req time %d"%(time.time() - t0))
         while len(status) == 0:
             self.pysocksSetting()
-            rs = (self.session.get(self.UB_URL%(self.APIKEY,steamid)) for steamid in userlist)
-            res_ = list(map(lambda x:x.result(),rs))
+            rs = (grequests.get(self.UB_URL%(self.APIKEY,steamid)) for steamid in userlist)
+            res_ = grequests.map(rs)
             status = [i.status_code for i in res_ if i != None]
         docs = []
 
