@@ -3,6 +3,7 @@ import socks
 from urllib.request import urlopen
 from collections import deque
 from copy import copy
+from bs4 import BeautifulSoup
 import requests,re,datetime,sys,getopt,pymongo,time
 import grequests
 
@@ -16,6 +17,8 @@ class SteamData:
     US_URL = "http://api.steampowered.com/ISteamUserStats/GetUserStatsForGame/v0002/?appid=%d&key=%s&steamid=%s"
     UO_URL = " http://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=%s&steamid=%s&format=json"
     UB_URL = "http://api.steampowered.com/ISteamUser/GetPlayerBans/v1/?key=%s&steamids=%s"
+    topSellerList_URL = "http://store.steampowered.com/search/?filter=topsellers&page=%d"
+
     APIKEY= "9F041FB9B406DCC0FD036440C6BC459C"
     authors = set()
     authorsList = []
@@ -27,10 +30,10 @@ class SteamData:
     def __init__(self):
         self.client = pymongo.MongoClient()
         self.db = self.client.steam
-        self.torOff = False
-
-    def offTorBrowser(self):
         self.torOff = True
+
+    def onTorBrowser(self):
+        self.torOff = False
 
     def pysocksSetting(self):
         if self.torOff == True:
@@ -60,6 +63,7 @@ class SteamData:
         self.db.appList.insert_many(additionalDoc)
         print("add AppList below...")
         print("total app count: %d"%self.db.appList.count())
+
     def __getGameDetailMapper(self,x):
         try:
             return x.json()[list(x.json().keys())[0]]["data"]
@@ -69,9 +73,10 @@ class SteamData:
         curAppidsSet = set(self.getAppids())
         updatedDetailsSet = set(self.db.appDetail.distinct('steam_appid'))
         ids2Add = curAppidsSet - updatedDetailsSet
-        for idsChunk in list(self.chunks(list(ids2Add), 100)):
-            rs = (grequests.get(self.G_URL%(i)) for i in idsChunk)
+        for idsChunk in list(self.chunks(list(ids2Add), 5)):
+            rs = (grequests.get(self.G_URL%(i),timeout=10) for i in idsChunk)
             myresponse = grequests.map(rs)
+            time.sleep(2)
             appDetails_ = map(lambda x: self.__getGameDetailMapper(x),myresponse)
             appDetails = [i for i in appDetails_ if i != None]
             yield appDetails
@@ -79,8 +84,58 @@ class SteamData:
 
     def updateAppDetail(self):
         for appDetails in self.getAppDetails():
+            lengthRslt = len(appDetails)
+            if lengthRslt == 0:
+                print("zero app Data")
+                continue
             self.db.appDetail.insert_many(appDetails)
-            print("insert %d app details"%len(appDetails))
+            print("insert %d app details"%lengthRslt)
+
+
+
+
+    def getTopSellerAppIds(self):
+        def appIdMapper(i):
+            if i == None:
+                return []
+            return list(map(lambda x:int(x),i.split(",")))
+        for idx in range(1,74):
+            res = requests.get(self.topSellerList_URL%(idx))
+            restxt = res.text
+            soup = BeautifulSoup(restxt,"html.parser")
+            rslt = soup.find_all("a",{"class":"search_result_row"})
+            appids = []
+            for rslt_i in rslt:
+                try:
+                    for id_i in appIdMapper(rslt_i.attrs['data-ds-appid']):
+                        appids.append(id_i)
+                except:
+                    continue
+            yield appids
+
+    def updateAppDetail2(self):
+        #curAppidsSet = set(self.getAppids())
+        #updatedDetailsSet = set(self.db.appDetail.distinct('steam_appid'))
+        #ids2Add = curAppidsSet - updatedDetailsSet
+        for aid_arr in self.getTopSellerAppIds():
+            print(aid_arr)
+            if len(aid_arr) == 0:
+                continue
+            for aid in aid_arr:
+                while True:
+                    res = requests.get(self.G_URL%(aid))
+                    time.sleep(1)
+                    myAppDetail = self.__getGameDetailMapper(res)
+                    if myAppDetail == None:
+                        print("get app detail fail")
+                        continue
+                    print("insert app Detail %d"%aid)
+                    self.db.appDetail.insert(myAppDetail)
+                    break
+
+
+   
+
 
     def updateAllAppReviews(self):
         appids = self.getAppids()
